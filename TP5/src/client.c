@@ -15,6 +15,28 @@
 
 #include "client.h"
 
+int envoie_operateur_numeros(int socketfd, const char *operateur, int num1, int num2)
+{
+  char data[1024];
+  snprintf(data, sizeof(data), "calcule : %s %d %d", operateur, num1, num2);
+
+  if (write(socketfd, data, strlen(data)) < 0)
+  {
+    perror("Erreur d'ecriture");
+    return -1;
+  }
+
+  memset(data, 0, sizeof(data));
+  if (read(socketfd, data, sizeof(data)) < 0)
+  {
+    perror("Erreur de lecture");
+    return -1;
+  }
+
+  printf("Résultat du serveur : %s\n", data);
+  return 0;
+}
+
 int envoie_recois_message(int socketfd)
 {
   char data[1024];
@@ -52,6 +74,7 @@ int main(void)
 {
   int socketfd;
   struct sockaddr_in server_addr;
+  char choix[32];
 
   socketfd = socket(AF_INET, SOCK_STREAM, 0);
   if (socketfd < 0)
@@ -73,9 +96,34 @@ int main(void)
 
   while (1)
   {
-    if (envoie_recois_message(socketfd) < 0)
+    printf("Choisir un mode (message / calcule) : ");
+    if (fgets(choix, sizeof(choix), stdin) == NULL)
     {
       break;
+    }
+
+    choix[strcspn(choix, "\r\n")] = '\0';
+
+    if (strcmp(choix, "message") == 0)
+    {
+      envoie_recois_message(socketfd);
+    }
+    else if (strcmp(choix, "calcule") == 0)
+    {
+      char operateur[8];
+      int num1, num2;
+      printf("Opérateur (+, -, *, /, %%) : ");
+      scanf("%7s", operateur);
+      printf("Nombre 1 : ");
+      scanf("%d", &num1);
+      printf("Nombre 2 : ");
+      scanf("%d", &num2);
+      getchar();
+      envoie_operateur_numeros(socketfd, operateur, num1, num2);
+    }
+    else
+    {
+      printf("Choix invalide.\n");
     }
   }
 

@@ -47,6 +47,42 @@ int renvoie_message(int client_socket_fd, char *data)
  * @param data : Le message.
  * @return EXIT_SUCCESS en cas de succès, EXIT_FAILURE en cas d'erreur.
  */
+int recois_numeros_calcule(int client_socket_fd, char *data)
+{
+  char operateur;
+  int num1, num2, resultat;
+
+  if (sscanf(data, "calcule : %c %d %d", &operateur, &num1, &num2) != 3)
+  {
+    return EXIT_FAILURE;
+  }
+
+  switch (operateur)
+  {
+    case '+':
+      resultat = num1 + num2;
+      break;
+    case '-':
+      resultat = num1 - num2;
+      break;
+    case '*':
+      resultat = num1 * num2;
+      break;
+    case '/':
+      resultat = num1 / num2;
+      break;
+    case '%':
+      resultat = num1 % num2;
+      break;
+    default:
+      return EXIT_FAILURE;
+  }
+
+  char reponse[128];
+  snprintf(reponse, sizeof(reponse), "calcule : %d", resultat);
+  return renvoie_message(client_socket_fd, reponse);
+}
+
 int recois_envoie_message(int client_socket_fd, char *data)
 {
   printf("Message reçu: %s\n", data);
@@ -64,6 +100,11 @@ int recois_envoie_message(int client_socket_fd, char *data)
     char message[1024];
     snprintf(message, sizeof(message), "message: %s", reponse);
     return renvoie_message(client_socket_fd, message);
+  }
+
+  if (strncmp(data, "calcule :", 9) == 0)
+  {
+    return recois_numeros_calcule(client_socket_fd, data);
   }
 
   return EXIT_SUCCESS;
