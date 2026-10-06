@@ -10,6 +10,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <search.h>
+#include <string.h>
+
+static void liberer_compteur(couleur_compteur *compteur)
+{
+  if (compteur == NULL)
+  {
+    return;
+  }
+  if (compteur->compte_bit == BITS24)
+  {
+    free(compteur->cc.cc24);
+  }
+  else if (compteur->compte_bit == BITS32)
+  {
+    free(compteur->cc.cc32);
+  }
+  free(compteur);
+}
 
 // compter les couleurs distincts
 couleur_compteur *compte_couleur(couleur *c, int csize)
@@ -18,6 +36,16 @@ couleur_compteur *compte_couleur(couleur *c, int csize)
   COMPTEBIT bc;
   int compteur_size = 0;
   int i = 0;
+  if (csize <= 0)
+  {
+    return NULL;
+  }
+  char **keys = calloc((size_t)csize, sizeof(char *));
+  if (keys == NULL)
+  {
+    free(keys);
+    return NULL;
+  }
 
   if (c->compte_bit == BITS24)
   {
@@ -26,13 +54,16 @@ couleur_compteur *compte_couleur(couleur *c, int csize)
     if (compteur == NULL)
     {
       perror("Erreur: allocation dynamique de memoire\n");
+      free(keys);
       return NULL;
     }
     compteur->compte_bit = BITS24;
-    compteur->cc.cc24 = calloc(csize, sizeof(couleur_compteur));
-    if (compteur == NULL)
+    compteur->cc.cc24 = calloc((size_t)csize, sizeof(couleur24_compteur));
+    if (compteur->cc.cc24 == NULL)
     {
       perror("Erreur: allocation dynamique de memoire\n");
+      liberer_compteur(compteur);
+      free(keys);
       return NULL;
     }
   }
@@ -43,26 +74,36 @@ couleur_compteur *compte_couleur(couleur *c, int csize)
     if (compteur == NULL)
     {
       perror("Erreur: allocation dynamique de memoire\n");
+      free(keys);
       return NULL;
     }
     compteur->compte_bit = BITS32;
-    compteur->cc.cc32 = calloc(csize, sizeof(couleur_compteur));
-    if (compteur == NULL)
+    compteur->cc.cc32 = calloc((size_t)csize, sizeof(couleur32_compteur));
+    if (compteur->cc.cc32 == NULL)
     {
       perror("Erreur: allocation dynamique de memoire\n");
+      liberer_compteur(compteur);
+      free(keys);
       return NULL;
     }
   }
   else
   {
     perror("compte du bits inconnu");
+    free(keys);
     return NULL;
   }
 
   /*
    * créer une table de hachage pour stocker les différentes couleurs et leur nombre
    */
-  hcreate(csize);
+  if (hcreate((size_t)csize) == 0)
+  {
+    perror("Erreur: creation de la table de couleurs");
+    free(keys);
+    liberer_compteur(compteur);
+    return NULL;
+  }
 
   for (i = 0; i < csize; i++)
   {
@@ -71,11 +112,11 @@ couleur_compteur *compte_couleur(couleur *c, int csize)
 
     if (bc == BITS24)
     {
-      sprintf(key, "%hd:%hd:%hd", c->c.c24[i].rouge, c->c.c24[i].vert, c->c.c24[i].bleu);
+      snprintf(key, sizeof(key), "%u:%u:%u", c->c.c24[i].rouge, c->c.c24[i].vert, c->c.c24[i].bleu);
     }
     else if (bc == BITS32)
     {
-      sprintf(key, "%hd:%hd:%hd:%hd", c->c.c32[i].rouge, c->c.c32[i].vert, c->c.c32[i].bleu, c->c.c32[i].alpha);
+      snprintf(key, sizeof(key), "%u:%u:%u:%u", c->c.c32[i].rouge, c->c.c32[i].vert, c->c.c32[i].bleu, c->c.c32[i].alpha);
     }
     e.key = key;
 
@@ -87,18 +128,38 @@ couleur_compteur *compte_couleur(couleur *c, int csize)
       {
         compteur->cc.cc24[compteur_size - 1].c = c->c.c24[i];
         compteur->cc.cc24[compteur_size - 1].compte = 1;
-        e.data = (void *)&compteur->cc.cc24[compteur_size - 1];
+        e.data = &compteur->cc.cc24[compteur_size - 1];
       }
       else
       {
         compteur->cc.cc32[compteur_size - 1].c = c->c.c32[i];
         compteur->cc.cc32[compteur_size - 1].compte = 1;
-        e.data = (void *)&compteur->cc.cc32[compteur_size - 1];
+        e.data = &compteur->cc.cc32[compteur_size - 1];
       }
+      keys[compteur_size - 1] = strdup(key);
+      if (keys[compteur_size - 1] == NULL)
+      {
+        hdestroy();
+        for (int key_index = 0; key_index < compteur_size - 1; key_index++)
+        {
+          free(keys[key_index]);
+        }
+        free(keys);
+        liberer_compteur(compteur);
+        return NULL;
+      }
+      e.key = keys[compteur_size - 1];
       es = hsearch(e, ENTER);
       if (es == NULL)
       {
         perror("Erreur: impossible d'inserer\n");
+        hdestroy();
+        for (int key_index = 0; key_index < compteur_size; key_index++)
+        {
+          free(keys[key_index]);
+        }
+        free(keys);
+        liberer_compteur(compteur);
         return NULL;
       }
     }
@@ -120,6 +181,11 @@ couleur_compteur *compte_couleur(couleur *c, int csize)
   compteur->size = compteur_size;
 
   hdestroy();
+  for (i = 0; i < compteur_size; i++)
+  {
+    free(keys[i]);
+  }
+  free(keys);
   return compteur;
 }
 

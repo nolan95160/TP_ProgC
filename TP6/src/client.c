@@ -58,43 +58,71 @@ int envoie_recois_message(int socketfd)
   return 0;
 }
 
-void analyse(char *pathname, char *data)
+static void liberer_couleurs(couleur_compteur *cc)
 {
-  // compte de couleurs
-  couleur_compteur *cc = analyse_bmp_image(pathname);
-
-  int count;
-  strcpy(data, "couleurs: ");
-  char temp_string[10] = "10,";
-  if (cc->size < 10)
+  if (cc != NULL)
   {
-    sprintf(temp_string, "%d,", cc->size);
-  }
-  strcat(data, temp_string);
-
-  // choisir 10 couleurs
-  for (count = 1; count < 11 && cc->size - count > 0; count++)
-  {
-    if (cc->compte_bit == BITS32)
-    {
-      sprintf(temp_string, "#%02x%02x%02x,", cc->cc.cc24[cc->size - count].c.rouge, cc->cc.cc32[cc->size - count].c.vert, cc->cc.cc32[cc->size - count].c.bleu);
-    }
     if (cc->compte_bit == BITS24)
     {
-      sprintf(temp_string, "#%02x%02x%02x,", cc->cc.cc32[cc->size - count].c.rouge, cc->cc.cc32[cc->size - count].c.vert, cc->cc.cc32[cc->size - count].c.bleu);
+      free(cc->cc.cc24);
     }
-    strcat(data, temp_string);
+    else
+    {
+      free(cc->cc.cc32);
+    }
+    free(cc);
+  }
+}
+
+static int analyse(char *pathname, char *data, size_t data_size)
+{
+  couleur_compteur *cc = analyse_bmp_image(pathname);
+  if (cc == NULL || cc->size <= 0)
+  {
+    liberer_couleurs(cc);
+    fprintf(stderr, "Aucune couleur exploitable dans l'image.\n");
+    return -1;
   }
 
-  // enlever le dernier virgule
-  data[strlen(data) - 1] = '\0';
+  size_t used = (size_t)snprintf(data, data_size, "couleurs:");
+  int count = cc->size < 10 ? cc->size : 10;
+
+  for (int index = 0; index < count; index++)
+  {
+    char color[8];
+    int color_index = cc->size - index - 1;
+    if (cc->compte_bit == BITS32)
+    {
+      couleur32 pixel = cc->cc.cc32[color_index].c;
+      snprintf(color, sizeof(color), "#%02x%02x%02x", pixel.rouge, pixel.vert, pixel.bleu);
+    }
+    else
+    {
+      couleur24 pixel = cc->cc.cc24[color_index].c;
+      snprintf(color, sizeof(color), "#%02x%02x%02x", pixel.rouge, pixel.vert, pixel.bleu);
+    }
+
+    int written = snprintf(data + used, data_size - used, "%s%s", index == 0 ? "" : ",", color);
+    if (written < 0 || (size_t)written >= data_size - used)
+    {
+      liberer_couleurs(cc);
+      return -1;
+    }
+    used += (size_t)written;
+  }
+
+  liberer_couleurs(cc);
+  return 0;
 }
 
 int envoie_couleurs(int socketfd, char *pathname)
 {
   char data[1024];
   memset(data, 0, sizeof(data));
-  analyse(pathname, data);
+  if (analyse(pathname, data, sizeof(data)) != 0)
+  {
+    return -1;
+  }
 
   int write_status = write(socketfd, data, strlen(data));
   if (write_status < 0)
@@ -132,7 +160,7 @@ int main(int argc, char **argv)
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(PORT);
-  server_addr.sin_addr.s_addr = INADDR_ANY;
+  server_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
   // demande de connection au serveur
   int connect_status = connect(socketfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
@@ -141,17 +169,12 @@ int main(int argc, char **argv)
     perror("connection serveur");
     exit(EXIT_FAILURE);
   }
-  if (argc != 2)
+  if (envoie_couleurs(socketfd, argv[1]) != 0)
   {
-    // envoyer et recevoir un message
-    envoie_recois_message(socketfd);
-  }
-  else
-  {
-    // envoyer et recevoir les couleurs prédominantes
-    // d'une image au format BMP (argv[1])
-    envoie_couleurs(socketfd, argv[1]);
+    close(socketfd);
+    return EXIT_FAILURE;
   }
 
   close(socketfd);
+  return EXIT_SUCCESS;
 }

@@ -6,6 +6,7 @@
  */
 
 #include <math.h>
+#include <ctype.h>
 #include <netinet/in.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -18,8 +19,32 @@
 #include "serveur.h"
 int socketfd;
 
+#define MAX_COLORS 10
+
+static int couleur_svg_valide(const char *color)
+{
+  if (color == NULL || strlen(color) != 7 || color[0] != '#')
+  {
+    return 0;
+  }
+  for (int index = 1; index < 7; index++)
+  {
+    if (!isxdigit((unsigned char)color[index]))
+    {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 int visualize_plot()
 {
+  if (getenv("DISPLAY") == NULL)
+  {
+    printf("SVG genere: %s\n", svg_file_path);
+    return 0;
+  }
+
   const char *browser = "firefox";
 
   char command[256];
@@ -46,14 +71,31 @@ double degreesToRadians(double degrees)
 
 int plot(char *data)
 {
-  int i;
+  char *colors[MAX_COLORS];
+  int color_count = 0;
   char *saveptr = NULL;
-  char *str = data;
-  char *token = strtok_r(str, ",", &saveptr);
-  const int num_colors = 10;
+  if (strncmp(data, "couleurs:", 9) != 0)
+  {
+    fprintf(stderr, "Format de couleurs invalide.\n");
+    return 1;
+  }
 
-  double angles[num_colors];
-  memset(angles, 0, sizeof(angles));
+  char *token = strtok_r(data + 9, ",", &saveptr);
+  while (token != NULL && color_count < MAX_COLORS)
+  {
+    if (!couleur_svg_valide(token))
+    {
+      fprintf(stderr, "Couleur SVG invalide: %s\n", token);
+      return 1;
+    }
+    colors[color_count++] = token;
+    token = strtok_r(NULL, ",", &saveptr);
+  }
+  if (color_count == 0 || token != NULL)
+  {
+    fprintf(stderr, "Nombre de couleurs invalide.\n");
+    return 1;
+  }
 
   FILE *svg_file = fopen(svg_file_path, "w");
   if (svg_file == NULL)
@@ -72,33 +114,30 @@ int plot(char *data)
 
   double start_angle = -90.0;
 
-  str = NULL;
-  i = 0;
-  while (1)
+  for (int i = 0; i < color_count; i++)
   {
-    token = strtok_r(str, ",", &saveptr);
-    if (token == NULL)
+    double slice = 360.0 / color_count;
+    double end_angle = start_angle + slice;
+
+    if (color_count == 1)
     {
-      break;
+      fprintf(svg_file, "  <circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"%s\" />\n",
+              center_x, center_y, radius, colors[i]);
     }
-    str = NULL;
-    angles[i] = 360.0 / num_colors;
+    else
+    {
+      double start_angle_rad = degreesToRadians(start_angle);
+      double end_angle_rad = degreesToRadians(end_angle);
+      double x1 = center_x + radius * cos(start_angle_rad);
+      double y1 = center_y + radius * sin(start_angle_rad);
+      double x2 = center_x + radius * cos(end_angle_rad);
+      double y2 = center_y + radius * sin(end_angle_rad);
+      int large_arc = slice > 180.0 ? 1 : 0;
 
-    double end_angle = start_angle + angles[i];
-
-    double start_angle_rad = degreesToRadians(start_angle);
-    double end_angle_rad = degreesToRadians(end_angle);
-
-    double x1 = center_x + radius * cos(start_angle_rad);
-    double y1 = center_y + radius * sin(start_angle_rad);
-    double x2 = center_x + radius * cos(end_angle_rad);
-    double y2 = center_y + radius * sin(end_angle_rad);
-
-    fprintf(svg_file, "  <path d=\"M%.2f,%.2f A%.2f,%.2f 0 0,1 %.2f,%.2f L%.2f,%.2f Z\" fill=\"%s\" />\n",
-            x1, y1, radius, radius, x2, y2, center_x, center_y, token);
-
+      fprintf(svg_file, "  <path d=\"M%.2f,%.2f A%.2f,%.2f 0 %d,1 %.2f,%.2f L%.2f,%.2f Z\" fill=\"%s\" />\n",
+              x1, y1, radius, radius, large_arc, x2, y2, center_x, center_y, colors[i]);
+    }
     start_angle = end_angle;
-    i++;
   }
 
   fprintf(svg_file, "</svg>\n");
@@ -134,11 +173,7 @@ int recois_envoie_message(int client_socket_fd, char data[1024])
    * Les données envoyées par le client peuvent commencer par le mot "message :" ou un autre mot.
    */
   printf("Message recu: %s\n", data);
-  char code[10];
-  sscanf(data, "%s", code);
-
-  // Si le message commence par le mot: 'message:'
-  if (strcmp(code, "message:") == 0)
+  if (strncmp(data, "message:", 8) == 0)
   {
     renvoie_message(client_socket_fd, data);
   }
@@ -195,12 +230,16 @@ int main()
   // Enregistrez la fonction de gestion du signal Ctrl+C
   signal(SIGINT, gestionnaire_ctrl_c);
 
+  if (listen(socketfd, 10) < 0)
+  {
+    perror("listen");
+    close(socketfd);
+    return EXIT_FAILURE;
+  }
+
   // Écouter les messages envoyés par le client en boucle infinie
   while (1)
   {
-    // Écouter les messages envoyés par le client
-    listen(socketfd, 10);
-
     // Lire et répondre au client
     struct sockaddr_in client_addr;
     char data[1024];
@@ -219,15 +258,21 @@ int main()
     memset(data, 0, sizeof(data));
 
     // lecture de données envoyées par un client
-    int data_size = read(client_socket_fd, (void *)data, sizeof(data));
+    int data_size = read(client_socket_fd, (void *)data, sizeof(data) - 1);
 
-    if (data_size < 0)
+    if (data_size <= 0)
     {
-      perror("erreur lecture");
-      return (EXIT_FAILURE);
+      if (data_size < 0)
+      {
+        perror("erreur lecture");
+      }
+      close(client_socket_fd);
+      continue;
     }
 
+    data[data_size] = '\0';
     recois_envoie_message(client_socket_fd, data);
+    close(client_socket_fd);
   }
 
   return 0;
