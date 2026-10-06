@@ -19,7 +19,7 @@
 #include "serveur.h"
 int socketfd;
 
-#define MAX_COLORS 10
+#define MAX_COLORS 30
 
 static int couleur_svg_valide(const char *color)
 {
@@ -81,7 +81,21 @@ int plot(char *data)
   }
 
   char *token = strtok_r(data + 9, ",", &saveptr);
-  while (token != NULL && color_count < MAX_COLORS)
+  if (token == NULL)
+  {
+    fprintf(stderr, "Nombre de couleurs manquant.\n");
+    return 1;
+  }
+
+  char *count_end = NULL;
+  long requested_count = strtol(token, &count_end, 10);
+  if (count_end == token || *count_end != '\0' || requested_count < 1 || requested_count > MAX_COLORS)
+  {
+    fprintf(stderr, "Nombre de couleurs invalide.\n");
+    return 1;
+  }
+
+  while ((token = strtok_r(NULL, ",", &saveptr)) != NULL && color_count < MAX_COLORS)
   {
     if (!couleur_svg_valide(token))
     {
@@ -89,9 +103,8 @@ int plot(char *data)
       return 1;
     }
     colors[color_count++] = token;
-    token = strtok_r(NULL, ",", &saveptr);
   }
-  if (color_count == 0 || token != NULL)
+  if (color_count != requested_count || token != NULL)
   {
     fprintf(stderr, "Nombre de couleurs invalide.\n");
     return 1;

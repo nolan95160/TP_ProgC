@@ -8,6 +8,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -74,7 +76,7 @@ static void liberer_couleurs(couleur_compteur *cc)
   }
 }
 
-static int analyse(char *pathname, char *data, size_t data_size)
+static int analyse(char *pathname, char *data, size_t data_size, int requested_count)
 {
   couleur_compteur *cc = analyse_bmp_image(pathname);
   if (cc == NULL || cc->size <= 0)
@@ -84,8 +86,8 @@ static int analyse(char *pathname, char *data, size_t data_size)
     return -1;
   }
 
-  size_t used = (size_t)snprintf(data, data_size, "couleurs:");
-  int count = cc->size < 10 ? cc->size : 10;
+  int count = cc->size < requested_count ? cc->size : requested_count;
+  size_t used = (size_t)snprintf(data, data_size, "couleurs:%d,", count);
 
   for (int index = 0; index < count; index++)
   {
@@ -115,11 +117,11 @@ static int analyse(char *pathname, char *data, size_t data_size)
   return 0;
 }
 
-int envoie_couleurs(int socketfd, char *pathname)
+int envoie_couleurs(int socketfd, char *pathname, int color_count)
 {
   char data[1024];
   memset(data, 0, sizeof(data));
-  if (analyse(pathname, data, sizeof(data)) != 0)
+  if (analyse(pathname, data, sizeof(data), color_count) != 0)
   {
     return -1;
   }
@@ -134,16 +136,46 @@ int envoie_couleurs(int socketfd, char *pathname)
   return 0;
 }
 
+static int lire_nombre_couleurs(void)
+{
+  char input[32];
+  printf("Nombre de couleurs a traiter (1-30) : ");
+  if (fgets(input, sizeof(input), stdin) == NULL)
+  {
+    return -1;
+  }
+
+  errno = 0;
+  char *end = NULL;
+  long count = strtol(input, &end, 10);
+  while (end != NULL && isspace((unsigned char)*end))
+  {
+    end++;
+  }
+  if (errno != 0 || end == input || *end != '\0' || count < 1 || count > 30)
+  {
+    fprintf(stderr, "Le nombre de couleurs doit etre compris entre 1 et 30.\n");
+    return -1;
+  }
+  return (int)count;
+}
+
 int main(int argc, char **argv)
 {
   int socketfd;
-
   struct sockaddr_in server_addr;
+  int color_count;
 
-  if (argc < 2)
+  if (argc != 2)
   {
     printf("usage: ./client chemin_bmp_image\n");
     return (EXIT_FAILURE);
+  }
+
+  color_count = lire_nombre_couleurs();
+  if (color_count < 1)
+  {
+    return EXIT_FAILURE;
   }
 
   /*
@@ -169,7 +201,7 @@ int main(int argc, char **argv)
     perror("connection serveur");
     exit(EXIT_FAILURE);
   }
-  if (envoie_couleurs(socketfd, argv[1]) != 0)
+  if (envoie_couleurs(socketfd, argv[1], color_count) != 0)
   {
     close(socketfd);
     return EXIT_FAILURE;
