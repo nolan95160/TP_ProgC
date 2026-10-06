@@ -17,6 +17,51 @@
 
 #include "client.h"
 #include "bmp.h"
+#include "json.h"
+
+static int envoyer_json(int socketfd, const char *message)
+{
+  char frame[1024];
+  int length = snprintf(frame, sizeof(frame), "%s\n", message);
+  if (length < 0 || (size_t)length >= sizeof(frame))
+  {
+    return -1;
+  }
+
+  size_t sent = 0;
+  while (sent < (size_t)length)
+  {
+    ssize_t count = write(socketfd, frame + sent, (size_t)length - sent);
+    if (count <= 0)
+    {
+      perror("erreur ecriture");
+      return -1;
+    }
+    sent += (size_t)count;
+  }
+  return 0;
+}
+
+static int recevoir_json(int socketfd, char *message, size_t message_size)
+{
+  size_t used = 0;
+  while (used + 1 < message_size)
+  {
+    char value;
+    ssize_t count = read(socketfd, &value, 1);
+    if (count <= 0)
+    {
+      return -1;
+    }
+    if (value == '\n')
+    {
+      message[used] = '\0';
+      return 0;
+    }
+    message[used++] = value;
+  }
+  return -1;
+}
 
 /*
  * Fonction d'envoi et de réception de messages
@@ -25,38 +70,36 @@
 
 int envoie_recois_message(int socketfd)
 {
-
+  char message[JSON_VALUE_SIZE];
   char data[1024];
-  // la réinitialisation de l'ensemble des données
-  memset(data, 0, sizeof(data));
-
-  // Demandez à l'utilisateur d'entrer un message
-  char message[1024];
+  const char *values[1];
   printf("Votre message (max 1000 caracteres): ");
-  fgets(message, sizeof(message), stdin);
-  strcpy(data, "message: ");
-  strcat(data, message);
-
-  int write_status = write(socketfd, data, strlen(data));
-  if (write_status < 0)
+  if (fgets(message, sizeof(message), stdin) == NULL)
   {
-    perror("erreur ecriture");
-    exit(EXIT_FAILURE);
+    return -1;
+  }
+  message[strcspn(message, "\r\n")] = '\0';
+  values[0] = message;
+  if (json_encode_message(data, sizeof(data), "message", values, 1) != 0 ||
+      envoyer_json(socketfd, data) != 0)
+  {
+    fprintf(stderr, "Erreur: creation ou envoi du message JSON.\n");
+    return -1;
   }
 
-  // la réinitialisation de l'ensemble des données
-  memset(data, 0, sizeof(data));
-
-  // lire les données de la socket
-  int read_status = read(socketfd, data, sizeof(data));
-  if (read_status < 0)
+  if (recevoir_json(socketfd, data, sizeof(data)) != 0)
   {
     perror("erreur lecture");
     return -1;
   }
-
-  printf("Message recu: %s\n", data);
-
+  json_message response;
+  if (json_decode_message(data, &response) != 0 || strcmp(response.code, "message") != 0 ||
+      response.value_count != 1)
+  {
+    fprintf(stderr, "Reponse JSON invalide.\n");
+    return -1;
+  }
+  printf("Message recu: %s\n", response.values[0]);
   return 0;
 }
 
@@ -87,34 +130,27 @@ static int analyse(char *pathname, char *data, size_t data_size, int requested_c
   }
 
   int count = cc->size < requested_count ? cc->size : requested_count;
-  size_t used = (size_t)snprintf(data, data_size, "couleurs:%d,", count);
+  char color_values[JSON_MAX_VALUES][8];
+  const char *values[JSON_MAX_VALUES];
 
   for (int index = 0; index < count; index++)
   {
-    char color[8];
     int color_index = cc->size - index - 1;
     if (cc->compte_bit == BITS32)
     {
       couleur32 pixel = cc->cc.cc32[color_index].c;
-      snprintf(color, sizeof(color), "#%02x%02x%02x", pixel.rouge, pixel.vert, pixel.bleu);
+      snprintf(color_values[index], sizeof(color_values[index]), "#%02x%02x%02x", pixel.rouge, pixel.vert, pixel.bleu);
     }
     else
     {
       couleur24 pixel = cc->cc.cc24[color_index].c;
-      snprintf(color, sizeof(color), "#%02x%02x%02x", pixel.rouge, pixel.vert, pixel.bleu);
+      snprintf(color_values[index], sizeof(color_values[index]), "#%02x%02x%02x", pixel.rouge, pixel.vert, pixel.bleu);
     }
-
-    int written = snprintf(data + used, data_size - used, "%s%s", index == 0 ? "" : ",", color);
-    if (written < 0 || (size_t)written >= data_size - used)
-    {
-      liberer_couleurs(cc);
-      return -1;
-    }
-    used += (size_t)written;
+    values[index] = color_values[index];
   }
 
   liberer_couleurs(cc);
-  return 0;
+  return json_encode_message(data, data_size, "couleurs", values, (size_t)count);
 }
 
 int envoie_couleurs(int socketfd, char *pathname, int color_count)
@@ -126,13 +162,24 @@ int envoie_couleurs(int socketfd, char *pathname, int color_count)
     return -1;
   }
 
-  int write_status = write(socketfd, data, strlen(data));
-  if (write_status < 0)
+  if (envoyer_json(socketfd, data) != 0)
   {
-    perror("erreur ecriture");
-    exit(EXIT_FAILURE);
+    return -1;
   }
 
+  if (recevoir_json(socketfd, data, sizeof(data)) != 0)
+  {
+    perror("erreur lecture");
+    return -1;
+  }
+  json_message response;
+  if (json_decode_message(data, &response) != 0 || strcmp(response.code, "resultat") != 0 ||
+      response.value_count != 1)
+  {
+    fprintf(stderr, "Reponse JSON invalide du serveur.\n");
+    return -1;
+  }
+  printf("Serveur: %s\n", response.values[0]);
   return 0;
 }
 
@@ -165,17 +212,21 @@ int main(int argc, char **argv)
   int socketfd;
   struct sockaddr_in server_addr;
   int color_count;
+  int message_mode = argc == 2 && strcmp(argv[1], "--message") == 0;
 
   if (argc != 2)
   {
-    printf("usage: ./client chemin_bmp_image\n");
+    printf("usage: ./client chemin_bmp_image | --message\n");
     return (EXIT_FAILURE);
   }
 
-  color_count = lire_nombre_couleurs();
-  if (color_count < 1)
+  if (!message_mode)
   {
-    return EXIT_FAILURE;
+    color_count = lire_nombre_couleurs();
+    if (color_count < 1)
+    {
+      return EXIT_FAILURE;
+    }
   }
 
   /*
@@ -201,7 +252,9 @@ int main(int argc, char **argv)
     perror("connection serveur");
     exit(EXIT_FAILURE);
   }
-  if (envoie_couleurs(socketfd, argv[1], color_count) != 0)
+  int result = message_mode ? envoie_recois_message(socketfd)
+                            : envoie_couleurs(socketfd, argv[1], color_count);
+  if (result != 0)
   {
     close(socketfd);
     return EXIT_FAILURE;

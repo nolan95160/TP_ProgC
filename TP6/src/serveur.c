@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "serveur.h"
+#include "json.h"
 int socketfd;
 
 #define MAX_COLORS 30
@@ -69,46 +70,25 @@ double degreesToRadians(double degrees)
   return degrees * M_PI / 180.0;
 }
 
-int plot(char *data)
+int plot(const json_message *message)
 {
-  char *colors[MAX_COLORS];
-  int color_count = 0;
-  char *saveptr = NULL;
-  if (strncmp(data, "couleurs:", 9) != 0)
+  if (message == NULL || strcmp(message->code, "couleurs") != 0 ||
+      message->value_count == 0 || message->value_count > MAX_COLORS)
   {
-    fprintf(stderr, "Format de couleurs invalide.\n");
+    fprintf(stderr, "Requete de couleurs invalide.\n");
     return 1;
   }
 
-  char *token = strtok_r(data + 9, ",", &saveptr);
-  if (token == NULL)
+  for (size_t index = 0; index < message->value_count; index++)
   {
-    fprintf(stderr, "Nombre de couleurs manquant.\n");
-    return 1;
-  }
-
-  char *count_end = NULL;
-  long requested_count = strtol(token, &count_end, 10);
-  if (count_end == token || *count_end != '\0' || requested_count < 1 || requested_count > MAX_COLORS)
-  {
-    fprintf(stderr, "Nombre de couleurs invalide.\n");
-    return 1;
-  }
-
-  while ((token = strtok_r(NULL, ",", &saveptr)) != NULL && color_count < MAX_COLORS)
-  {
-    if (!couleur_svg_valide(token))
+    if (!couleur_svg_valide(message->values[index]))
     {
-      fprintf(stderr, "Couleur SVG invalide: %s\n", token);
+      fprintf(stderr, "Couleur SVG invalide: %s\n", message->values[index]);
       return 1;
     }
-    colors[color_count++] = token;
   }
-  if (color_count != requested_count || token != NULL)
-  {
-    fprintf(stderr, "Nombre de couleurs invalide.\n");
-    return 1;
-  }
+
+  size_t color_count = message->value_count;
 
   FILE *svg_file = fopen(svg_file_path, "w");
   if (svg_file == NULL)
@@ -135,7 +115,7 @@ int plot(char *data)
     if (color_count == 1)
     {
       fprintf(svg_file, "  <circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"%s\" />\n",
-              center_x, center_y, radius, colors[i]);
+              center_x, center_y, radius, message->values[i]);
     }
     else
     {
@@ -148,7 +128,7 @@ int plot(char *data)
       int large_arc = slice > 180.0 ? 1 : 0;
 
       fprintf(svg_file, "  <path d=\"M%.2f,%.2f A%.2f,%.2f 0 %d,1 %.2f,%.2f L%.2f,%.2f Z\" fill=\"%s\" />\n",
-              x1, y1, radius, radius, large_arc, x2, y2, center_x, center_y, colors[i]);
+              x1, y1, radius, radius, large_arc, x2, y2, center_x, center_y, message->values[i]);
     }
     start_angle = end_angle;
   }
@@ -175,27 +155,75 @@ int renvoie_message(int client_socket_fd, char *data)
   return (EXIT_SUCCESS);
 }
 
+static int envoyer_reponse_json(int client_socket_fd, const char *code,
+                                const char *value)
+{
+  char response[1024];
+  const char *values[] = {value};
+  if (json_encode_message(response, sizeof(response), code, values, 1) != 0)
+  {
+    return EXIT_FAILURE;
+  }
+
+  size_t length = strlen(response);
+  response[length++] = '\n';
+  size_t sent = 0;
+  while (sent < length)
+  {
+    ssize_t count = write(client_socket_fd, response + sent, length - sent);
+    if (count <= 0)
+    {
+      perror("erreur ecriture JSON");
+      return EXIT_FAILURE;
+    }
+    sent += (size_t)count;
+  }
+  return EXIT_SUCCESS;
+}
+
 /* accepter la nouvelle connection d'un client et lire les données
  * envoyées par le client. En suite, le serveur envoie un message
  * en retour
  */
 int recois_envoie_message(int client_socket_fd, char data[1024])
 {
-  /*
-   * extraire le code des données envoyées par le client.
-   * Les données envoyées par le client peuvent commencer par le mot "message :" ou un autre mot.
-   */
-  printf("Message recu: %s\n", data);
-  if (strncmp(data, "message:", 8) == 0)
+  json_message request;
+  if (json_decode_message(data, &request) != 0)
   {
-    renvoie_message(client_socket_fd, data);
-  }
-  else
-  {
-    plot(data);
+    return envoyer_reponse_json(client_socket_fd, "erreur", "JSON invalide");
   }
 
-  return (EXIT_SUCCESS);
+  if (strcmp(request.code, "message") == 0 && request.value_count == 1)
+  {
+    printf("Message recu: %s\n", request.values[0]);
+    return envoyer_reponse_json(client_socket_fd, "message", request.values[0]);
+  }
+  if (strcmp(request.code, "couleurs") == 0 && plot(&request) == 0)
+  {
+    return envoyer_reponse_json(client_socket_fd, "resultat", "SVG genere");
+  }
+  return envoyer_reponse_json(client_socket_fd, "erreur", "Requete invalide");
+}
+
+static int recevoir_ligne_json(int socket_fd, char *buffer, size_t buffer_size)
+{
+  size_t used = 0;
+  while (used + 1 < buffer_size)
+  {
+    char value;
+    ssize_t count = read(socket_fd, &value, 1);
+    if (count <= 0)
+    {
+      return -1;
+    }
+    if (value == '\n')
+    {
+      buffer[used] = '\0';
+      return 0;
+    }
+    buffer[used++] = value;
+  }
+  return -1;
 }
 
 // Fonction de gestion du signal Ctrl+C
@@ -267,23 +295,13 @@ int main()
       return (EXIT_FAILURE);
     }
 
-    // la réinitialisation de l'ensemble des données
-    memset(data, 0, sizeof(data));
-
-    // lecture de données envoyées par un client
-    int data_size = read(client_socket_fd, (void *)data, sizeof(data) - 1);
-
-    if (data_size <= 0)
+    if (recevoir_ligne_json(client_socket_fd, data, sizeof(data)) != 0)
     {
-      if (data_size < 0)
-      {
-        perror("erreur lecture");
-      }
+      perror("erreur lecture JSON");
       close(client_socket_fd);
       continue;
     }
 
-    data[data_size] = '\0';
     recois_envoie_message(client_socket_fd, data);
     close(client_socket_fd);
   }
