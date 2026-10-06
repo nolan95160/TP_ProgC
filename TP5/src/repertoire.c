@@ -74,6 +74,7 @@ void lire_dossier_iteratif(const char *nom_repertoire)
     int debut = 0;
     int fin = 1;
 
+    printf("Parcours iteratif du repertoire %s\n", nom_repertoire);
     snprintf(files[0], sizeof(files[0]), "%s", nom_repertoire);
 
     while (debut < fin)
