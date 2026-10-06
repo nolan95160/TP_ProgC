@@ -50,16 +50,23 @@ int renvoie_message(int client_socket_fd, char *data)
 int recois_envoie_message(int client_socket_fd, char *data)
 {
   printf("Message reçu: %s\n", data);
-  char code[10];
-  if (sscanf(data, "%9s:", code) == 1) // Assurez-vous que le format est correct
+
+  if (strncmp(data, "message:", 8) == 0)
   {
-    if (strcmp(code, "message:") == 0)
+    char reponse[1024];
+    printf("Votre réponse pour le client : ");
+    if (fgets(reponse, sizeof(reponse), stdin) == NULL)
     {
-      return renvoie_message(client_socket_fd, data);
+      return EXIT_FAILURE;
     }
+    reponse[strcspn(reponse, "\r\n")] = '\0';
+
+    char message[1024];
+    snprintf(message, sizeof(message), "message: %s", reponse);
+    return renvoie_message(client_socket_fd, message);
   }
 
-  return (EXIT_SUCCESS);
+  return EXIT_SUCCESS;
 }
 
 /**
